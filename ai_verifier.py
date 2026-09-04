@@ -267,13 +267,14 @@ class AIVerifier:
 
         client = self.grok_client
 
+        token_limit = 300 if key.startswith("gsk_") else 1000
         last_error = None
         for current_model in models_to_try:
             call_kwargs = {
                 "model": current_model,
                 "messages": messages,
                 "temperature": 0.2,
-                "max_tokens": 4096,
+                "max_tokens": token_limit,
                 "response_format": {"type": "json_object"}
             }
             # Отключаем токены размышлений (reasoning tokens), чтобы не тратить лимит max_tokens
@@ -281,7 +282,7 @@ class AIVerifier:
                 call_kwargs["reasoning_effort"] = "none"
 
             try:
-                logger.info("Вызов %s с моделью: %s (max_tokens=4096)", provider_title, current_model)
+                logger.info("Вызов %s с моделью: %s (max_tokens=%d)", provider_title, current_model, token_limit)
                 try:
                     response = await client.chat.completions.create(**call_kwargs)
                 except Exception as call_err:
@@ -290,7 +291,12 @@ class AIVerifier:
                     if "reasoning_effort" in call_err_str:
                         call_kwargs.pop("reasoning_effort", None)
                         response = await client.chat.completions.create(**call_kwargs)
-                    # 2. Если строгий валидатор JSON на стороне Groq выбросил json_validate_failed или лимит токенов,
+                    # 2. Если Groq требует уменьшить max_tokens (OTPM limit 1000)
+                    elif any(p in call_err_str.lower() for p in ["reduce max_tokens", "otpm", "expected output tokens exceed"]):
+                        logger.warning("Groq OTPM limit превышен, повторный вызов с max_tokens=150...")
+                        call_kwargs["max_tokens"] = 150
+                        response = await client.chat.completions.create(**call_kwargs)
+                    # 3. Если строгий валидатор JSON на стороне Groq выбросил json_validate_failed или лимит токенов,
                     # запрашиваем без response_format и парсим JSON самостоятельно
                     elif any(p in call_err_str.lower() for p in ["json_validate_failed", "failed to generate json", "max completion tokens reached"]):
                         logger.warning("Строгий JSON-режим %s вызвал ошибку, повторный вызов без response_format...", provider_title)
@@ -326,7 +332,7 @@ class AIVerifier:
                         f"4. Перезапустите бота (python main.py)."
                     )
 
-                # 2. Если модель устарела, выведена из эксплуатации (decommissioned) или не найдена
+                # 2. Если модель устарела, выведена из эксплуатации (decommissioned), не найдена или превышен лимит 429
                 err_lower = err_msg.lower()
                 if any(phrase in err_lower for phrase in [
                     "model not found",
@@ -335,9 +341,12 @@ class AIVerifier:
                     "decommissioned",
                     "no longer supported",
                     "not supported",
-                    "does not exist"
+                    "does not exist",
+                    "rate_limit_exceeded",
+                    "rate limit",
+                    "429"
                 ]):
-                    logger.warning("Модель '%s' устарела или не найдена в %s API (%s), пробуем резервную...", current_model, provider_title, err_msg)
+                    logger.warning("Модель '%s' вернула ошибку в %s API (%s), пробуем резервную...", current_model, provider_title, err_msg)
                     continue
                 else:
                     # Прочие системные ошибки
@@ -345,7 +354,13 @@ class AIVerifier:
                     return False, f"Ошибка при проверке скриншотов через {provider_title} API: {err_msg}"
 
         logger.exception("Все попытки вызова моделей %s завершились ошибкой: %s", provider_title, last_error)
-        return False, f"Ошибка при проверке скриншотов через {provider_title} API: {str(last_error)}"
+        err_str = str(last_error)
+        if "429" in err_str or "rate_limit" in err_str.lower() or "tokens" in err_str.lower():
+            return False, (
+                f"⏳ Превышен лимит запросов в минуту в {provider_title} (Rate limit / OTPM: 1000 токенов/мин).\n\n"
+                "Пожалуйста, подождите 30–60 секунд и отправьте скриншоты повторно."
+            )
+        return False, f"Ошибка при проверке скриншотов через {provider_title} API: {err_str}"
 
     async def _verify_with_gemini(
         self,

@@ -276,6 +276,58 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(approved)
         self.assertIn("Все условия соблюдены", reason)
 
+    async def test_groq_cloud_otpm_limit_auto_reduction(self):
+        """Тестирование автоматического уменьшения max_tokens до 150 при превышении OTPM лимита GroqCloud."""
+        verifier = AIVerifier(provider="grok", xai_api_key="gsk_mock_groq_key", xai_model="qwen/qwen3.8-27b")
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"approved": true, "reason": "OTPM auto-reduced: успешно проверено."}'
+                )
+            )
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                Exception("Error code: 429 - {'error': {'message': \"Request too large for model `qwen/qwen3.8-27b` on output tokens per minute (OTPM): Limit 1000, Requested 1453. The request's expected output tokens exceed the enforced limit; reduce max_tokens (or the request's expected output) and try again.\", 'type': 'tokens', 'code': 'rate_limit_exceeded'}}"),
+                mock_response
+            ]
+        )
+        verifier.grok_client = mock_client
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
+        self.assertTrue(approved)
+        self.assertIn("OTPM auto-reduced: успешно проверено", reason)
+        # Проверяем, что второй вызов был с max_tokens=150
+        second_call_kwargs = mock_client.chat.completions.create.call_args_list[1].kwargs
+        self.assertEqual(second_call_kwargs.get("max_tokens"), 150)
+
+    async def test_groq_cloud_429_all_models_rate_limit(self):
+        """Тестирование понятного сообщения пользователю при исчерпании лимитов запросов 429 на всех моделях."""
+        verifier = AIVerifier(provider="grok", xai_api_key="gsk_mock_groq_key", xai_model="qwen/qwen3.8-27b")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=Exception("Error code: 429 - {'error': {'message': 'Rate limit exceeded: TPM limit reached.', 'code': 'rate_limit_exceeded'}}")
+        )
+        verifier.grok_client = mock_client
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
+        self.assertFalse(approved)
+        self.assertIn("Превышен лимит запросов в минуту в GroqCloud", reason)
+        self.assertIn("30–60 секунд", reason)
+
     def test_clean_and_parse_json(self):
         """Тестирование извлечения JSON из ответов с reasoning tokens и markdown."""
         text_with_think = "<think>Длинные размышления модели...</think>{\"approved\": true, \"reason\": \"Успешно проверено\"}"
