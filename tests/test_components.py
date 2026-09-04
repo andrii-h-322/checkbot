@@ -183,6 +183,37 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(approved)
         self.assertIn("Fallback Grok: успешно", reason)
 
+    async def test_grok_verifier_auth_error_handling(self):
+        """Тестирование понятного сообщения об ошибке при неверном ключе API xAI."""
+        verifier = AIVerifier(provider="grok", xai_api_key="xai-bad-key", xai_model="grok-4.20-non-reasoning")
+
+        mock_grok_client = MagicMock()
+        mock_grok_client.chat.completions.create = AsyncMock(
+            side_effect=Exception("Error code: 400 - {'code': 'invalid-argument', 'error': 'Incorrect API key provided. You can obtain an API key from https://console.x.ai.'}")
+        )
+        verifier.grok_client = mock_grok_client
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
+        self.assertFalse(approved)
+        self.assertIn("Ошибка авторизации в xAI Grok API", reason)
+        self.assertIn("console.x.ai", reason)
+
+    async def test_grok_verifier_empty_key_prevalidation(self):
+        """Тестирование быстрой валидации при пустом ключе xAI."""
+        verifier = AIVerifier(provider="grok", xai_api_key="", xai_model="grok-4.20-non-reasoning")
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
+        self.assertFalse(approved)
+        self.assertIn("Не указан API-ключ xAI Grok", reason)
+
     def test_admin_contact_button(self):
         """Тестирование генерации кнопки связи с администратором."""
         from handlers.photo_handler import get_admin_contact_keyboard
