@@ -214,6 +214,37 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(approved)
         self.assertIn("Не указан API-ключ xAI Grok", reason)
 
+    async def test_groq_cloud_decommissioned_fallback(self):
+        """Тестирование автоматического перехода на резервную модель GroqCloud при ошибке model_decommissioned."""
+        verifier = AIVerifier(provider="grok", xai_api_key="gsk_mock_groq_key", xai_model="llama-3.2-11b-vision-preview")
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"approved": true, "reason": "GroqCloud: скриншоты проверены."}'
+                )
+            )
+        ]
+
+        mock_client = MagicMock()
+        # Первая модель llama-3.2-11b возвращает ошибку model_decommissioned, вторая (qwen/qwen3.6-27b) успешна
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                Exception("Error code: 400 - {'error': {'message': 'The model llama-3.2-11b-vision-preview has been decommissioned and is no longer supported.', 'code': 'model_decommissioned'}}"),
+                mock_response
+            ]
+        )
+        verifier.grok_client = mock_client
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
+        self.assertTrue(approved)
+        self.assertIn("GroqCloud: скриншоты проверены", reason)
+
     def test_admin_contact_button(self):
         """Тестирование генерации кнопки связи с администратором."""
         from handlers.photo_handler import get_admin_contact_keyboard

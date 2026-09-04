@@ -156,11 +156,22 @@ class AIVerifier:
 
         # 2. Определение моделей для вызова
         if key.startswith("gsk_"):
-            # Если пользователь указал ключ от GroqCloud (groq.com)
-            model_to_use = "llama-3.2-11b-vision-preview"
-            models_to_try = ["llama-3.2-11b-vision-preview", "llama-3.2-90b-vision-preview"]
+            # GroqCloud (https://console.groq.com)
+            # В актуальном API Groq модель llama-3.2-11b выведена из эксплуатации,
+            # официальная замена с поддержкой зрения и JSON: qwen/qwen3.6-27b
+            custom_model = (self.xai_model or "").strip()
+            if any(old in custom_model for old in ["llama-3.2", "grok-2", "vision-preview"]) or not custom_model or "grok" in custom_model:
+                model_to_use = "qwen/qwen3.6-27b"
+            else:
+                model_to_use = custom_model
+
+            models_to_try = [model_to_use]
+            for m in ["qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "meta-llama/llama-4-scout-17b-16e-instruct"]:
+                if m not in models_to_try:
+                    models_to_try.append(m)
+            provider_title = "GroqCloud"
         else:
-            # xAI Grok
+            # xAI Grok (https://console.x.ai)
             model_to_use = self.xai_model or "grok-4.20-non-reasoning"
             if "grok-2" in model_to_use.lower() or model_to_use in ("grok-vision-beta", "grok-2-vision-1212"):
                 logger.warning("Модель '%s' устарела в xAI API, переключаемся на grok-4.20-non-reasoning", model_to_use)
@@ -170,8 +181,9 @@ class AIVerifier:
             for fallback in ["grok-4.20-non-reasoning", "grok-4.3", "grok-4.20", "grok-4.5"]:
                 if fallback not in models_to_try:
                     models_to_try.append(fallback)
+            provider_title = "xAI Grok"
 
-        logger.info("Отправка %d скриншотов в xAI Grok API (%s)...", len(images_bytes), model_to_use)
+        logger.info("Отправка %d скриншотов в %s API (%s)...", len(images_bytes), provider_title, model_to_use)
 
         content_items = [
             {
@@ -218,7 +230,7 @@ class AIVerifier:
         last_error = None
         for current_model in models_to_try:
             try:
-                logger.info("Вызов xAI Grok с моделью: %s", current_model)
+                logger.info("Вызов %s с моделью: %s", provider_title, current_model)
                 response = await client.chat.completions.create(
                     model=current_model,
                     messages=messages,
@@ -228,7 +240,7 @@ class AIVerifier:
                 )
 
                 raw_text = response.choices[0].message.content or "{}"
-                logger.info("Ответ от xAI Grok (%s): %s", current_model, raw_text)
+                logger.info("Ответ от %s (%s): %s", provider_title, current_model, raw_text)
 
                 cleaned = raw_text.strip()
                 if cleaned.startswith("```"):
@@ -247,30 +259,39 @@ class AIVerifier:
                 err_msg = str(e)
                 last_error = e
 
-                # Ошибка аутентификации / неверного ключа
+                # 1. Ошибка аутентификации / неверного ключа
                 if any(phrase in err_msg for phrase in ["Incorrect API key", "invalid_api_key", "Unauthorized", "401"]):
-                    logger.error("Ошибка авторизации в xAI Grok API: %s", err_msg)
+                    console_url = "https://console.groq.com" if key.startswith("gsk_") else "https://console.x.ai"
+                    logger.error("Ошибка авторизации в %s API: %s", provider_title, err_msg)
                     return False, (
-                        "❌ Ошибка авторизации в xAI Grok API: указан недействительный API-ключ (XAI_API_KEY).\n\n"
-                        "🔑 Как исправить:\n"
-                        "1. Перейдите в консоль https://console.x.ai\n"
-                        "2. Создайте новый API-ключ в разделе 'API Keys' (ключ должен начинаться с 'xai-').\n"
-                        "3. Убедитесь, что на балансе аккаунта xAI есть кредиты.\n"
-                        "4. В файле .env укажите: XAI_API_KEY=xai-ваш_ключ\n"
-                        "5. Перезапустите бота (python main.py)."
+                        f"❌ Ошибка авторизации в {provider_title} API: указан недействительный API-ключ (XAI_API_KEY).\n\n"
+                        f"🔑 Как исправить:\n"
+                        f"1. Перейдите в консоль {console_url}\n"
+                        f"2. Создайте новый API-ключ в разделе 'API Keys'.\n"
+                        f"3. В файле .env укажите: XAI_API_KEY=ваш_ключ\n"
+                        f"4. Перезапустите бота (python main.py)."
                     )
 
-                # Если ошибка вызвана тем, что конкретная модель не найдена
-                if "Model not found" in err_msg or "model_not_found" in err_msg:
-                    logger.warning("Модель '%s' не найдена в xAI API (%s), пробуем резервную...", current_model, err_msg)
+                # 2. Если модель устарела, выведена из эксплуатации (decommissioned) или не найдена
+                err_lower = err_msg.lower()
+                if any(phrase in err_lower for phrase in [
+                    "model not found",
+                    "model_not_found",
+                    "model_decommissioned",
+                    "decommissioned",
+                    "no longer supported",
+                    "not supported",
+                    "does not exist"
+                ]):
+                    logger.warning("Модель '%s' устарела или не найдена в %s API (%s), пробуем резервную...", current_model, provider_title, err_msg)
                     continue
                 else:
                     # Прочие системные ошибки
-                    logger.exception("Ошибка при обращении к xAI Grok API (%s): %s", current_model, e)
-                    return False, f"Ошибка при проверке скриншотов через Grok API: {err_msg}"
+                    logger.exception("Ошибка при обращении к %s API (%s): %s", provider_title, current_model, e)
+                    return False, f"Ошибка при проверке скриншотов через {provider_title} API: {err_msg}"
 
-        logger.exception("Все попытки вызова моделей xAI Grok завершились ошибкой: %s", last_error)
-        return False, f"Ошибка при проверке скриншотов через Grok API: {str(last_error)}"
+        logger.exception("Все попытки вызова моделей %s завершились ошибкой: %s", provider_title, last_error)
+        return False, f"Ошибка при проверке скриншотов через {provider_title} API: {str(last_error)}"
 
     async def _verify_with_gemini(
         self,
