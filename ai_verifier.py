@@ -45,7 +45,11 @@ class AIVerifier:
             if not self.gemini_api_key:
                 raise ValueError("GEMINI_API_KEY не указан! Укажите ключ в файле .env")
             from google import genai
-            self._gemini_client = genai.Client(api_key=self.gemini_api_key)
+            from google.genai import types
+            self._gemini_client = genai.Client(
+                api_key=self.gemini_api_key,
+                http_options=types.HttpOptions(timeout=60000)
+            )
         return self._gemini_client
 
     @gemini_client.setter

@@ -5,6 +5,7 @@ AI-верификатор (Gemini / OpenAI) для проверки, Telegram AP
 и кнопку оперативной связи с администратором при возникновении вопросов или отказе.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
@@ -136,12 +137,26 @@ async def process_verification(
     try:
         await context.bot.send_chat_action(chat_id=reply_to_message.chat_id, action=ChatAction.TYPING)
 
-        # 1. Скачивание изображений в память
+        # 1. Скачивание изображений в память с повторными попытками
         images_bytes: List[bytes] = []
         for idx, p in enumerate(photos_to_verify, start=1):
             logger.info("Скачивание фото %d/%d для user_id=%s...", idx, len(photos_to_verify), user.id)
-            tg_file = await context.bot.get_file(p.file_id)
-            data = await tg_file.download_as_bytearray()
+            data = None
+            last_err = None
+            for attempt in range(1, 4):
+                try:
+                    tg_file = await context.bot.get_file(p.file_id, read_timeout=60.0, write_timeout=60.0)
+                    data = await tg_file.download_as_bytearray(read_timeout=60.0, write_timeout=60.0)
+                    break
+                except Exception as dl_err:
+                    last_err = dl_err
+                    logger.warning("Попытка %d/3 скачивания фото %d не удалась: %s", attempt, idx, dl_err)
+                    if attempt < 3:
+                        await asyncio.sleep(1.5)
+
+            if not data:
+                raise last_err or TimeoutError("Превышено время ожидания скачивания фото от серверов Telegram.")
+
             images_bytes.append(bytes(data))
 
         # 2. AI проверка через выбранный AI-провайдер (Gemini / OpenAI)

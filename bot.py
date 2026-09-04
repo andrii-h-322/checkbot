@@ -22,6 +22,7 @@ from database import Database
 from handlers.start import start_handler, help_handler, status_handler, support_handler, contact_admin_callback
 from handlers.photo_handler import photo_message_handler
 from telegram.ext import CallbackQueryHandler
+from telegram.request import HTTPXRequest
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,17 @@ def create_bot_application(db: Database) -> Application:
     if not token:
         logger.warning("TELEGRAM_BOT_TOKEN не задан! Бот не сможет подключиться к Telegram API.")
 
-    app = ApplicationBuilder().token(token or "DUMMY_TOKEN").build()
+    # Увеличиваем таймауты для надежного скачивания медиа-файлов
+    request_config = HTTPXRequest(
+        connection_pool_size=8,
+        connect_timeout=30.0,
+        read_timeout=60.0,
+        write_timeout=60.0,
+        pool_timeout=60.0,
+        media_write_timeout=60.0
+    )
+
+    app = ApplicationBuilder().token(token or "DUMMY_TOKEN").request(request_config).build()
 
     # Сохраняем БД в bot_data для доступа из любых хэндлеров
     app.bot_data["db"] = db
