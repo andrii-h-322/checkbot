@@ -357,6 +357,81 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(kb_empty)
         self.assertEqual(kb_empty.inline_keyboard[0][0].callback_data, "contact_admin")
 
+    def test_get_success_keyboard(self):
+        """Тестирование клавиатуры с кнопкой вступления в чат/канал."""
+        from handlers.photo_handler import get_success_keyboard
+        from config import settings
+
+        settings.admin_telegram_username = "@test_admin"
+
+        # С ссылкой на канал
+        kb = get_success_keyboard(invite_link="https://t.me/+test_link_123")
+        self.assertEqual(len(kb.inline_keyboard), 2)
+        self.assertEqual(kb.inline_keyboard[0][0].text, "🚀 Вступить в канал / чат")
+        self.assertEqual(kb.inline_keyboard[0][0].url, "https://t.me/+test_link_123")
+        self.assertEqual(kb.inline_keyboard[1][0].text, "💬 Связаться с администратором")
+
+        # Без ссылки (если генерация не удалась)
+        kb_no_link = get_success_keyboard(invite_link=None)
+        self.assertEqual(len(kb_no_link.inline_keyboard), 1)
+        self.assertEqual(kb_no_link.inline_keyboard[0][0].text, "💬 Связаться с администратором")
+
+    async def test_generate_channel_invite_link_multilevel(self):
+        """Тестирование многоуровневой генерации инвайт-ссылок."""
+        from handlers.photo_handler import generate_channel_invite_link
+        from telegram.error import TelegramError
+        from config import settings
+
+        mock_user = MagicMock(id=123456, username="sample_user")
+
+        # Уровень 1: успешное создание ссылки с первого вызова
+        mock_bot = MagicMock()
+        mock_link = MagicMock(invite_link="https://t.me/+level1_success")
+        mock_bot.create_chat_invite_link = AsyncMock(return_value=mock_link)
+
+        link, note, err = await generate_channel_invite_link(mock_bot, -1001234567890, mock_user)
+        self.assertEqual(link, "https://t.me/+level1_success")
+        self.assertIsNone(err)
+
+        # Уровень 2: Уровень 1 упал, Уровень 2 (базовый) успешен
+        mock_bot_lvl2 = MagicMock()
+        mock_lvl2_link = MagicMock(invite_link="https://t.me/+level2_basic")
+        mock_bot_lvl2.create_chat_invite_link = AsyncMock(
+            side_effect=[
+                TelegramError("Bad Request: custom name not allowed"),
+                mock_lvl2_link
+            ]
+        )
+        link2, _, err2 = await generate_channel_invite_link(mock_bot_lvl2, -1001234567890, mock_user)
+        self.assertEqual(link2, "https://t.me/+level2_basic")
+        self.assertIsNone(err2)
+
+        # Уровень 3: Уровни 1 и 2 упали (нет прав на создание), экспорт постоянной ссылки успешен
+        mock_bot_lvl3 = MagicMock()
+        mock_bot_lvl3.create_chat_invite_link = AsyncMock(side_effect=TelegramError("Not enough rights"))
+        mock_bot_lvl3.export_chat_invite_link = AsyncMock(return_value="https://t.me/+level3_exported")
+        link3, _, err3 = await generate_channel_invite_link(mock_bot_lvl3, -1001234567890, mock_user)
+        self.assertEqual(link3, "https://t.me/+level3_exported")
+        self.assertIsNone(err3)
+
+        # Уровень 5: Резервная ссылка INVITE_LINK_FALLBACK
+        mock_bot_lvl5 = MagicMock()
+        mock_bot_lvl5.create_chat_invite_link = AsyncMock(side_effect=TelegramError("Chat not found"))
+        mock_bot_lvl5.export_chat_invite_link = AsyncMock(side_effect=TelegramError("Chat not found"))
+        mock_bot_lvl5.get_chat = AsyncMock(side_effect=TelegramError("Chat not found"))
+
+        settings.invite_link_fallback = "https://t.me/+fallback_link"
+        link5, _, err5 = await generate_channel_invite_link(mock_bot_lvl5, -1001234567890, mock_user)
+        self.assertEqual(link5, "https://t.me/+fallback_link")
+        self.assertIsNone(err5)
+        settings.invite_link_fallback = ""
+
+        # Уровень 6: Все упало и нет резерва -> понятная ошибка с кодом ошибки
+        link6, note6, err6 = await generate_channel_invite_link(mock_bot_lvl5, -1001234567890, mock_user)
+        self.assertIsNone(link6)
+        self.assertIn("Chat not found", note6)
+        self.assertIn("Как исправить", note6)
+
     async def test_media_collector_album(self):
         """Тестирование сборки альбома из 2 фото с небольшой задержкой."""
         collector = MediaCollector(album_delay=0.1)

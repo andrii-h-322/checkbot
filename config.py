@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     # Параметры инвайт-ссылки
     invite_link_expire_hours: int = Field(default=24, alias="INVITE_LINK_EXPIRE_HOURS")
     invite_link_member_limit: int = Field(default=0, alias="INVITE_LINK_MEMBER_LIMIT")
+    invite_link_fallback: str = Field(default="", alias="INVITE_LINK_FALLBACK")
 
     # Критерии для проверки AI
     verification_criteria: str = Field(
@@ -64,10 +65,16 @@ class Settings(BaseSettings):
     @property
     def channel_chat_id(self) -> int | str:
         """Возвращает channel_id как int, если возможно, иначе как строку (username канала)."""
-        val = self.channel_id.strip()
+        if not self.channel_id:
+            return ""
+        val = str(self.channel_id).strip().strip('"').strip("'")
+        if not val:
+            return ""
         try:
             return int(val)
         except (ValueError, TypeError):
+            if not val.startswith("@") and not val.startswith("-"):
+                val = f"@{val}"
             return val
 
     @property

@@ -8,7 +8,7 @@ AI-верификатор (Gemini / OpenAI) для проверки, Telegram AP
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional
+from typing import List, Optional, Any
 from telegram import Update, Message, PhotoSize, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode, ChatAction
@@ -32,6 +32,133 @@ def get_admin_contact_keyboard() -> Optional[InlineKeyboardMarkup]:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("💬 Связаться с администратором", callback_data="contact_admin")]
         ])
+
+
+def get_success_keyboard(invite_link: Optional[str] = None) -> InlineKeyboardMarkup:
+    """Возвращает клавиатуру для успешной проверки со ссылкой перехода в чат/канал и кнопкой связи."""
+    buttons = []
+    if invite_link:
+        buttons.append([InlineKeyboardButton("🚀 Вступить в канал / чат", url=invite_link)])
+
+    if settings.admin_contact_url:
+        buttons.append([InlineKeyboardButton("💬 Связаться с администратором", url=settings.admin_contact_url)])
+    else:
+        buttons.append([InlineKeyboardButton("💬 Связаться с администратором", callback_data="contact_admin")])
+
+    return InlineKeyboardMarkup(buttons)
+
+
+async def generate_channel_invite_link(
+    bot,
+    channel_chat_id: int | str,
+    user: Any
+) -> tuple[Optional[str], str, Optional[str]]:
+    """
+    Надежная многоуровневая генерация пригласительной ссылки:
+    1. Попытка создать персонализированную ссылку (create_chat_invite_link) с тайм-аутом и лимитом
+    2. Попытка создать базовую ссылку без дополнительных ограничений
+    3. Попытка экспорта постоянной ссылки (export_chat_invite_link)
+    4. Получение ссылки или username из get_chat
+    5. Резервная ссылка INVITE_LINK_FALLBACK из конфигурации
+    """
+    link_note = ""
+    last_err: Optional[str] = None
+
+    # Если channel_chat_id не указан
+    if not channel_chat_id:
+        fallback = (settings.invite_link_fallback or "").strip()
+        if fallback:
+            logger.info("CHANNEL_ID не задан, использована резервная ссылка INVITE_LINK_FALLBACK: %s", fallback)
+            return fallback, "", None
+        return (
+            None,
+            "\n\n⚠️ <i>CHANNEL_ID не указан в файле .env или переменных окружения сервера. "
+            "Укажите ID канала/чата (например, -100...) в переменной CHANNEL_ID.</i>",
+            "CHANNEL_ID не задан в конфигурации"
+        )
+
+    # Расчет срока действия и лимита
+    expire_date = None
+    if settings.invite_link_expire_hours > 0:
+        expire_date = datetime.now(timezone.utc) + timedelta(hours=settings.invite_link_expire_hours)
+        link_note += f"\n⏳ Срок действия ссылки: {settings.invite_link_expire_hours} ч."
+
+    member_limit = settings.invite_link_member_limit if settings.invite_link_member_limit > 0 else None
+    if member_limit == 1:
+        link_note += "\n🔒 Ссылка является одноразовой (для 1 участника)."
+    elif member_limit and member_limit > 1:
+        link_note += f"\n👥 Лимит входов по ссылке: {member_limit}."
+
+    # Безопасное имя ссылки (Telegram API ограничивает длину имени 32 символами)
+    safe_name = f"ID {user.id}"
+    clean_username = "".join(c for c in (user.username or "") if c.isalnum() or c in "_-")
+    if clean_username:
+        safe_name = f"{user.id} @{clean_username}"[:32]
+
+    # Уровень 1: Полноценное создание ссылки с параметрами
+    try:
+        link_obj = await bot.create_chat_invite_link(
+            chat_id=channel_chat_id,
+            name=safe_name,
+            expire_date=expire_date,
+            member_limit=member_limit
+        )
+        if link_obj and link_obj.invite_link:
+            logger.info("Успешно создана персональная ссылка для user_id=%s: %s", user.id, link_obj.invite_link)
+            return link_obj.invite_link, link_note, None
+    except TelegramError as te:
+        last_err = str(te)
+        logger.warning("Уровень 1 (create_chat_invite_link с параметрами) не удался для %s: %s", channel_chat_id, te)
+
+    # Уровень 2: Базовый вызов create_chat_invite_link без expire_date и member_limit
+    try:
+        link_obj = await bot.create_chat_invite_link(chat_id=channel_chat_id)
+        if link_obj and link_obj.invite_link:
+            logger.info("Успешно создана базовая ссылка для user_id=%s: %s", user.id, link_obj.invite_link)
+            return link_obj.invite_link, "", None
+    except TelegramError as te:
+        last_err = str(te)
+        logger.warning("Уровень 2 (базовый create_chat_invite_link) не удался для %s: %s", channel_chat_id, te)
+
+    # Уровень 3: Экспорт постоянной ссылки чата/канала
+    try:
+        exported_link = await bot.export_chat_invite_link(chat_id=channel_chat_id)
+        if exported_link:
+            logger.info("Успешно экспортирована постоянная ссылка чата %s: %s", channel_chat_id, exported_link)
+            return exported_link, "", None
+    except TelegramError as te:
+        last_err = str(te)
+        logger.warning("Уровень 3 (export_chat_invite_link) не удался для %s: %s", channel_chat_id, te)
+
+    # Уровень 4: Получение существующей ссылки или публичного username через get_chat
+    try:
+        chat = await bot.get_chat(chat_id=channel_chat_id)
+        if getattr(chat, "invite_link", None):
+            return chat.invite_link, "", None
+        if getattr(chat, "username", None):
+            public_link = f"https://t.me/{chat.username}"
+            return public_link, "", None
+    except TelegramError as te:
+        last_err = str(te)
+        logger.warning("Уровень 4 (get_chat) не удался для %s: %s", channel_chat_id, te)
+
+    # Уровень 5: Резервная статическая ссылка из .env
+    fallback = (settings.invite_link_fallback or "").strip()
+    if fallback:
+        logger.info("Динамическая генерация не удалась, использована резервная ссылка INVITE_LINK_FALLBACK: %s", fallback)
+        return fallback, "", None
+
+    # Если все попытки провалились
+    logger.error("Все попытки создания ссылки для канала %s провалились: %s", channel_chat_id, last_err)
+    err_explanation = (
+        f"\n\n⚠️ <b>Не удалось сгенерировать ссылку автоматически.</b>\n"
+        f"Детали ошибки Telegram: <code>{last_err or 'Неизвестная ошибка Telegram'}</code>\n\n"
+        f"🔧 <b>Как исправить:</b>\n"
+        f"1. Убедитесь, что бот добавлен в целевой канал/чат <code>{channel_chat_id}</code> как <b>Администратор</b>.\n"
+        f"2. Проверьте, что боту выдано право <b>«Приглашать пользователей»</b> (Invite Users via Link).\n"
+        f"3. Либо укажите постоянную ссылку в .env: <code>INVITE_LINK_FALLBACK=https://t.me/+...</code>"
+    )
+    return None, err_explanation, last_err
 
 
 async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -169,42 +296,12 @@ async def process_verification(
         approved, reason = await ai_verifier.verify_screenshots(images_bytes)
 
         if approved:
-            # 3. Генерация инвайт-ссылки в канал
-            invite_link = None
-            link_note = ""
-
-            channel_chat_id = settings.channel_chat_id
-            if channel_chat_id:
-                try:
-                    expire_date = None
-                    if settings.invite_link_expire_hours > 0:
-                        expire_date = datetime.now(timezone.utc) + timedelta(hours=settings.invite_link_expire_hours)
-                        link_note += f"\n⏳ Срок действия ссылки: {settings.invite_link_expire_hours} ч."
-
-                    member_limit = settings.invite_link_member_limit if settings.invite_link_member_limit > 0 else None
-                    if member_limit == 1:
-                        link_note += "\n🔒 Ссылка является одноразовой (для 1 участника)."
-                    elif member_limit and member_limit > 1:
-                        link_note += f"\n👥 Лимит входов по ссылке: {member_limit}."
-
-                    link_obj = await context.bot.create_chat_invite_link(
-                        chat_id=channel_chat_id,
-                        name=f"ID {user.id} - @{user.username or user.first_name}",
-                        expire_date=expire_date,
-                        member_limit=member_limit
-                    )
-                    invite_link = link_obj.invite_link
-                    logger.info("Сгенерирована ссылка для user_id=%s: %s", user.id, invite_link)
-
-                except TelegramError as te:
-                    logger.error("Ошибка при создании invite-link в канале %s: %s", channel_chat_id, te)
-                    link_note = (
-                        "\n\n⚠️ <i>Не удалось сгенерировать ссылку автоматически. "
-                        "Убедитесь, что бот добавлен в целевой канал как Администратор "
-                        "с правом «Приглашать пользователей».</i>"
-                    )
-            else:
-                link_note = "\n\n⚠️ <i>CHANNEL_ID не задан в конфигурации бота.</i>"
+            # 3. Генерация инвайт-ссылки в канал / чат
+            invite_link, link_note, _ = await generate_channel_invite_link(
+                bot=context.bot,
+                channel_chat_id=settings.channel_chat_id,
+                user=user
+            )
 
             # 4. Запись успешной попытки в БД
             await db.record_attempt(
@@ -221,10 +318,10 @@ async def process_verification(
 
             if invite_link:
                 success_text += (
-                    f"👉 <b>Ваша ссылка для входа в канал:</b>\n"
-                    f"{invite_link}\n"
+                    f"👉 <b>Ваша ссылка для входа:</b>\n"
+                    f'<a href="{invite_link}">{invite_link}</a>\n'
                     f"{link_note}\n\n"
-                    "Добро пожаловать в наше сообщество! 🚀"
+                    "Нажмите на кнопку ниже или перейдите по ссылке, чтобы вступить! 🚀"
                 )
             else:
                 success_text += (
@@ -235,7 +332,7 @@ async def process_verification(
             await status_msg.edit_text(
                 success_text,
                 parse_mode=ParseMode.HTML,
-                reply_markup=get_admin_contact_keyboard()
+                reply_markup=get_success_keyboard(invite_link)
             )
 
         else:
