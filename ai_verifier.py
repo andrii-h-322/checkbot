@@ -5,6 +5,7 @@
 и возвращает структурированный ответ с решением (approved: bool, reason: str).
 """
 
+import re
 import json
 import base64
 import logging
@@ -50,6 +51,44 @@ class AIVerifier:
         if raw.lower().startswith("bearer "):
             raw = raw[7:].strip()
         return raw
+
+    @staticmethod
+    def _clean_and_parse_json(raw_text: str) -> Tuple[bool, str]:
+        """Извлекает и парсит JSON с approved и reason из ответа любой модели."""
+        cleaned = raw_text.strip()
+
+        # 1. Удаляем блоки рассуждений <think>...</think>, если модель вернула reasoning tokens
+        if "<think>" in cleaned and "</think>" in cleaned:
+            cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned).strip()
+
+        # 2. Удаляем markdown-блоки ```json ... ```
+        if "```" in cleaned:
+            m = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', cleaned)
+            if m:
+                cleaned = m.group(1).strip()
+
+        # 3. Пытаемся распарсить напрямую
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, dict):
+                appr = bool(data.get("approved", False))
+                reason = str(data.get("reason", "")).strip()
+                return appr, reason
+        except Exception:
+            pass
+
+        # 4. Поиск первого валидного JSON-объекта через регулярку
+        m = re.search(r'\{[\s\S]*?"approved"\s*:\s*(true|false)[\s\S]*?\}', cleaned, re.IGNORECASE)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                return bool(data.get("approved", False)), str(data.get("reason", "")).strip()
+            except Exception:
+                pass
+
+        # 5. Fallback по подстрокам
+        approved = "true" in cleaned.lower() and "approved" in cleaned.lower()
+        return approved, cleaned[:400]
 
     @property
     def grok_client(self):
@@ -157,16 +196,15 @@ class AIVerifier:
         # 2. Определение моделей для вызова
         if key.startswith("gsk_"):
             # GroqCloud (https://console.groq.com)
-            # В актуальном API Groq модель llama-3.2-11b выведена из эксплуатации,
-            # официальная замена с поддержкой зрения и JSON: qwen/qwen3.6-27b
+            # qwen/qwen3.8-27b имеет reasoning_effort="none" по умолчанию на Groq и отлично работает с JSON
             custom_model = (self.xai_model or "").strip()
             if any(old in custom_model for old in ["llama-3.2", "grok-2", "vision-preview"]) or not custom_model or "grok" in custom_model:
-                model_to_use = "qwen/qwen3.6-27b"
+                model_to_use = "qwen/qwen3.8-27b"
             else:
                 model_to_use = custom_model
 
             models_to_try = [model_to_use]
-            for m in ["qwen/qwen3.6-27b", "qwen/qwen3.8-27b", "meta-llama/llama-4-scout-17b-16e-instruct"]:
+            for m in ["qwen/qwen3.8-27b", "qwen/qwen3.6-27b", "meta-llama/llama-4-scout-17b-16e-instruct"]:
                 if m not in models_to_try:
                     models_to_try.append(m)
             provider_title = "GroqCloud"
@@ -216,7 +254,9 @@ class AIVerifier:
                 "role": "system",
                 "content": (
                     "Ты профессиональный верификатор выполнения условий для предоставления доступа "
-                    "в закрытый Telegram-канал. Всегда возвращай строго валидный JSON с полями approved (boolean) и reason (string)."
+                    "в закрытый Telegram-канал. Отвечай ИСКЛЮЧИТЕЛЬНО валидным JSON-объектом без каких-либо рассуждений, "
+                    "без markdown-разметки и без вступительных слов.\n"
+                    'Формат строго: {"approved": true/false, "reason": "текст на русском"}'
                 )
             },
             {
@@ -229,29 +269,43 @@ class AIVerifier:
 
         last_error = None
         for current_model in models_to_try:
+            call_kwargs = {
+                "model": current_model,
+                "messages": messages,
+                "temperature": 0.2,
+                "max_tokens": 4096,
+                "response_format": {"type": "json_object"}
+            }
+            # Отключаем токены размышлений (reasoning tokens), чтобы не тратить лимит max_tokens
+            if "qwen" in current_model.lower() or "grok" in current_model.lower():
+                call_kwargs["reasoning_effort"] = "none"
+
             try:
-                logger.info("Вызов %s с моделью: %s", provider_title, current_model)
-                response = await client.chat.completions.create(
-                    model=current_model,
-                    messages=messages,
-                    response_format={"type": "json_object"},
-                    temperature=0.2,
-                    max_tokens=1000
-                )
+                logger.info("Вызов %s с моделью: %s (max_tokens=4096)", provider_title, current_model)
+                try:
+                    response = await client.chat.completions.create(**call_kwargs)
+                except Exception as call_err:
+                    call_err_str = str(call_err)
+                    # 1. Если API не поддерживает параметр reasoning_effort, убираем его
+                    if "reasoning_effort" in call_err_str:
+                        call_kwargs.pop("reasoning_effort", None)
+                        response = await client.chat.completions.create(**call_kwargs)
+                    # 2. Если строгий валидатор JSON на стороне Groq выбросил json_validate_failed или лимит токенов,
+                    # запрашиваем без response_format и парсим JSON самостоятельно
+                    elif any(p in call_err_str.lower() for p in ["json_validate_failed", "failed to generate json", "max completion tokens reached"]):
+                        logger.warning("Строгий JSON-режим %s вызвал ошибку, повторный вызов без response_format...", provider_title)
+                        call_kwargs.pop("response_format", None)
+                        call_kwargs.pop("reasoning_effort", None)
+                        response = await client.chat.completions.create(**call_kwargs)
+                    else:
+                        raise
 
                 raw_text = response.choices[0].message.content or "{}"
-                logger.info("Ответ от %s (%s): %s", provider_title, current_model, raw_text)
+                logger.info("Ответ от %s (%s): %s", provider_title, current_model, raw_text[:200])
 
-                cleaned = raw_text.strip()
-                if cleaned.startswith("```"):
-                    cleaned = cleaned.split("\n", 1)[-1]
-                    if cleaned.endswith("```"):
-                        cleaned = cleaned.rsplit("\n", 1)[0]
-                    cleaned = cleaned.strip()
-
-                parsed = json.loads(cleaned)
-                approved = bool(parsed.get("approved", False))
-                reason = str(parsed.get("reason", "Решение не содержит описания.")).strip()
+                approved, reason = self._clean_and_parse_json(raw_text)
+                if not reason:
+                    reason = "Условия выполнены." if approved else "Условия не выполнены."
 
                 return approved, reason
 

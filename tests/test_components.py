@@ -245,6 +245,49 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(approved)
         self.assertIn("GroqCloud: скриншоты проверены", reason)
 
+    async def test_groq_cloud_json_validate_failed_fallback(self):
+        """Тестирование повторного вызова без response_format при ошибке json_validate_failed."""
+        verifier = AIVerifier(provider="grok", xai_api_key="gsk_mock_groq_key", xai_model="qwen/qwen3.8-27b")
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='<think>Размышляю...</think>```json\n{"approved": true, "reason": "Все условия соблюдены!"}\n```'
+                )
+            )
+        ]
+
+        mock_client = MagicMock()
+        # Первый вызов падает с 400 json_validate_failed (max completion tokens reached)
+        mock_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                Exception("Error code: 400 - {'error': {'message': \"Failed to generate JSON.\", 'code': 'json_validate_failed', 'failed_generation': 'max completion tokens reached before generating a valid document'}}"),
+                mock_response
+            ]
+        )
+        verifier.grok_client = mock_client
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
+        self.assertTrue(approved)
+        self.assertIn("Все условия соблюдены", reason)
+
+    def test_clean_and_parse_json(self):
+        """Тестирование извлечения JSON из ответов с reasoning tokens и markdown."""
+        text_with_think = "<think>Длинные размышления модели...</think>{\"approved\": true, \"reason\": \"Успешно проверено\"}"
+        appr, reason = AIVerifier._clean_and_parse_json(text_with_think)
+        self.assertTrue(appr)
+        self.assertEqual(reason, "Успешно проверено")
+
+        text_with_markdown = "Вот ваш ответ:\n```json\n{\"approved\": false, \"reason\": \"Нет комментариев\"}\n```"
+        appr, reason = AIVerifier._clean_and_parse_json(text_with_markdown)
+        self.assertFalse(appr)
+        self.assertEqual(reason, "Нет комментариев")
+
     def test_admin_contact_button(self):
         """Тестирование генерации кнопки связи с администратором."""
         from handlers.photo_handler import get_admin_contact_keyboard
