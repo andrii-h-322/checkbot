@@ -116,8 +116,14 @@ class AIVerifier:
         images_bytes: List[bytes],
         criteria: str
     ) -> Tuple[bool, str]:
-        """Проверка скриншотов через xAI Grok API (модель grok-2-vision-1212)."""
-        logger.info("Отправка %d скриншотов в xAI Grok API (%s)...", len(images_bytes), self.xai_model)
+        """Проверка скриншотов через xAI Grok API с поддержкой актуальных мультимодальных моделей."""
+        # Автоматическая замена устаревших моделей (xAI удалила серию grok-2)
+        model_to_use = self.xai_model or "grok-4.20-non-reasoning"
+        if "grok-2" in model_to_use.lower() or model_to_use in ("grok-vision-beta", "grok-2-vision-1212"):
+            logger.warning("Модель '%s' устарела в xAI API, переключаемся на grok-4.20-non-reasoning", model_to_use)
+            model_to_use = "grok-4.20-non-reasoning"
+
+        logger.info("Отправка %d скриншотов в xAI Grok API (%s)...", len(images_bytes), model_to_use)
 
         content_items = [
             {
@@ -159,35 +165,56 @@ class AIVerifier:
             }
         ]
 
-        try:
-            client = self.grok_client
-            response = await client.chat.completions.create(
-                model=self.xai_model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0.2,
-                max_tokens=1000
-            )
+        client = self.grok_client
 
-            raw_text = response.choices[0].message.content or "{}"
-            logger.info("Ответ от xAI Grok: %s", raw_text)
+        # Список моделей для попытки вызова (на случай, если конкретный элиас недоступен на ключе пользователя)
+        models_to_try = [model_to_use]
+        for fallback in ["grok-4.20-non-reasoning", "grok-4.3", "grok-4.20", "grok-4.5"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
 
-            cleaned = raw_text.strip()
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("\n", 1)[-1]
-                if cleaned.endswith("```"):
-                    cleaned = cleaned.rsplit("\n", 1)[0]
-                cleaned = cleaned.strip()
+        last_error = None
+        for current_model in models_to_try:
+            try:
+                logger.info("Вызов xAI Grok с моделью: %s", current_model)
+                response = await client.chat.completions.create(
+                    model=current_model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.2,
+                    max_tokens=1000
+                )
 
-            parsed = json.loads(cleaned)
-            approved = bool(parsed.get("approved", False))
-            reason = str(parsed.get("reason", "Решение не содержит описания.")).strip()
+                raw_text = response.choices[0].message.content or "{}"
+                logger.info("Ответ от xAI Grok (%s): %s", current_model, raw_text)
 
-            return approved, reason
+                cleaned = raw_text.strip()
+                if cleaned.startswith("```"):
+                    cleaned = cleaned.split("\n", 1)[-1]
+                    if cleaned.endswith("```"):
+                        cleaned = cleaned.rsplit("\n", 1)[0]
+                    cleaned = cleaned.strip()
 
-        except Exception as e:
-            logger.exception("Ошибка при обращении к xAI Grok API: %s", e)
-            return False, f"Ошибка при проверке скриншотов через Grok API: {str(e)}"
+                parsed = json.loads(cleaned)
+                approved = bool(parsed.get("approved", False))
+                reason = str(parsed.get("reason", "Решение не содержит описания.")).strip()
+
+                return approved, reason
+
+            except Exception as e:
+                err_msg = str(e)
+                last_error = e
+                # Если ошибка вызвана тем, что модель не существует или устарела, пробуем следующую
+                if "Model not found" in err_msg or "invalid-argument" in err_msg or "404" in err_msg:
+                    logger.warning("Модель '%s' не найдена в xAI API (%s), пробуем резервную...", current_model, err_msg)
+                    continue
+                else:
+                    # Прочие ошибки (невалидный API-ключ, сетевая ошибка и т.д.) возвращаем сразу
+                    logger.exception("Ошибка при обращении к xAI Grok API (%s): %s", current_model, e)
+                    return False, f"Ошибка при проверке скриншотов через Grok API: {err_msg}"
+
+        logger.exception("Все попытки вызова моделей xAI Grok завершились ошибкой: %s", last_error)
+        return False, f"Ошибка при проверке скриншотов через Grok API: {str(last_error)}"
 
     async def _verify_with_gemini(
         self,

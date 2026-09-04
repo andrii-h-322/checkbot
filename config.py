@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # xAI Grok API
     xai_api_key: str = Field(default="", alias="XAI_API_KEY")
-    xai_model: str = Field(default="grok-2-vision-1212", alias="XAI_MODEL")
+    xai_model: str = Field(default="grok-4.20-non-reasoning", alias="XAI_MODEL")
 
     # Google Gemini API
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")

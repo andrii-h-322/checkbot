@@ -129,7 +129,7 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
 
     async def test_grok_verifier_parsing(self):
         """Тестирование вызова и парсинга ответа xAI Grok API с моком."""
-        verifier = AIVerifier(provider="grok", xai_api_key="mock_xai_key", xai_model="grok-2-vision-1212")
+        verifier = AIVerifier(provider="grok", xai_api_key="mock_xai_key", xai_model="grok-4.20-non-reasoning")
 
         mock_response = MagicMock()
         mock_response.choices = [
@@ -151,6 +151,37 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(approved)
         self.assertIn("Grok: условия соблюдены", reason)
+
+    async def test_grok_verifier_model_fallback(self):
+        """Тестирование автоматического перехода на резервную модель при ошибке Model not found."""
+        verifier = AIVerifier(provider="grok", xai_api_key="mock_xai_key", xai_model="deprecated-custom-model")
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"approved": true, "reason": "Fallback Grok: успешно."}'
+                )
+            )
+        ]
+
+        mock_grok_client = MagicMock()
+        # Первый вызов падает с 400 Model not found, второй (fallback) успешен
+        mock_grok_client.chat.completions.create = AsyncMock(
+            side_effect=[
+                Exception("Error code: 400 - {'code': 'invalid-argument', 'error': 'Model not found: deprecated-custom-model'}"),
+                mock_response
+            ]
+        )
+        verifier.grok_client = mock_grok_client
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
+        self.assertTrue(approved)
+        self.assertIn("Fallback Grok: успешно", reason)
 
     def test_admin_contact_button(self):
         """Тестирование генерации кнопки связи с администратором."""

@@ -75,7 +75,7 @@ cp .env.example .env
 | `ADMIN_TELEGRAM_USERNAME` | Юзернейм администратора для кнопки связи | `@my_support_tg` |
 | `AI_PROVIDER` | AI-провайдер: `grok` (xAI), `gemini` или `openai` | `grok` |
 | `XAI_API_KEY` | API-ключ xAI Grok (консоль https://console.x.ai) | `xai-...` |
-| `XAI_MODEL` | Модель Grok Vision | `grok-2-vision-1212` |
+| `XAI_MODEL` | Модель Grok Vision | `grok-4.20-non-reasoning` |
 | `GEMINI_API_KEY` | API-ключ Google AI Studio | `AIzaSy...` |
 | `GEMINI_MODEL` | Модель Gemini | `gemini-3.6-flash` |
 | `OPENAI_API_KEY` | API-ключ OpenAI (если выбран провайдер `openai`) | `sk-proj-...` |
