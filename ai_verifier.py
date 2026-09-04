@@ -142,7 +142,13 @@ class AIVerifier:
 
         except Exception as e:
             logger.exception("Ошибка при обращении к Google Gemini API: %s", e)
-            return False, f"Ошибка при проверке скриншотов через Google Gemini API: {str(e)}"
+            err_msg = str(e)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                return False, (
+                    "Превышен лимит запросов к Google Gemini API (на бесплатном тарифе Google действует ограничение 20 проверок в сутки). "
+                    "Пожалуйста, подождите 1-2 минуты и попробуйте снова, либо свяжитесь с администратором кнопкой ниже."
+                )
+            return False, f"Ошибка при проверке скриншотов через Google Gemini API: {err_msg}"
 
     async def _verify_with_openai(
         self,
