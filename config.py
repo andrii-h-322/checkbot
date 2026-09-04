@@ -22,8 +22,12 @@ class Settings(BaseSettings):
     # Контакт администратора для кнопки связи
     admin_telegram_username: str = Field(default="", alias="ADMIN_TELEGRAM_USERNAME")
 
-    # AI Provider: 'gemini' или 'openai'
-    ai_provider: str = Field(default="gemini", alias="AI_PROVIDER")
+    # AI Provider: 'grok', 'gemini' или 'openai'
+    ai_provider: str = Field(default="grok", alias="AI_PROVIDER")
+
+    # xAI Grok API
+    xai_api_key: str = Field(default="", alias="XAI_API_KEY")
+    xai_model: str = Field(default="grok-2-vision-1212", alias="XAI_MODEL")
 
     # Google Gemini API
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")

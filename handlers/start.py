@@ -49,7 +49,12 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    ai_name = "Google Gemini" if settings.ai_provider.lower() == "gemini" else "GPT-4o"
+    if settings.ai_provider.lower() in ("grok", "xai"):
+        ai_name = "xAI Grok"
+    elif settings.ai_provider.lower() == "gemini":
+        ai_name = "Google Gemini"
+    else:
+        ai_name = "GPT-4o"
 
     # Приветствие и правила
     rules_text = (

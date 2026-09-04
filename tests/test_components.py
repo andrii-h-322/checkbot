@@ -127,8 +127,30 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
             custom_criteria="Тестовый критерий"
         )
 
+    async def test_grok_verifier_parsing(self):
+        """Тестирование вызова и парсинга ответа xAI Grok API с моком."""
+        verifier = AIVerifier(provider="grok", xai_api_key="mock_xai_key", xai_model="grok-2-vision-1212")
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(
+                message=MagicMock(
+                    content='{"approved": true, "reason": "Grok: условия соблюдены."}'
+                )
+            )
+        ]
+
+        mock_grok_client = MagicMock()
+        mock_grok_client.chat.completions.create = AsyncMock(return_value=mock_response)
+        verifier.grok_client = mock_grok_client
+
+        approved, reason = await verifier.verify_screenshots(
+            images_bytes=[b"fake_image_bytes_1", b"fake_image_bytes_2"],
+            custom_criteria="Тестовый критерий"
+        )
+
         self.assertTrue(approved)
-        self.assertIn("OpenAI: условия соблюдены", reason)
+        self.assertIn("Grok: условия соблюдены", reason)
 
     def test_admin_contact_button(self):
         """Тестирование генерации кнопки связи с администратором."""

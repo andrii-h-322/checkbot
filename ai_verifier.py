@@ -25,19 +25,41 @@ class AIVerifier:
     def __init__(
         self,
         provider: str = "",
+        xai_api_key: str = "",
+        xai_model: str = "",
         gemini_api_key: str = "",
         gemini_model: str = "",
         openai_api_key: str = "",
         openai_model: str = ""
     ):
         self.provider = (provider or settings.ai_provider).lower()
+        self.xai_api_key = xai_api_key or settings.xai_api_key
+        self.xai_model = xai_model or settings.xai_model
         self.gemini_api_key = gemini_api_key or settings.gemini_api_key
         self.gemini_model = gemini_model or settings.gemini_model
         self.openai_api_key = openai_api_key or settings.openai_api_key
         self.openai_model = openai_model or settings.openai_model
 
+        self._grok_client = None
         self._gemini_client = None
         self._openai_client = None
+
+    @property
+    def grok_client(self):
+        if self._grok_client is None:
+            if not self.xai_api_key:
+                raise ValueError("XAI_API_KEY не указан! Укажите ключ от Grok в файле .env")
+            from openai import AsyncOpenAI
+            self._grok_client = AsyncOpenAI(
+                api_key=self.xai_api_key,
+                base_url="https://api.x.ai/v1",
+                timeout=60.0
+            )
+        return self._grok_client
+
+    @grok_client.setter
+    def grok_client(self, value) -> None:
+        self._grok_client = value
 
     @property
     def gemini_client(self):
@@ -75,17 +97,97 @@ class AIVerifier:
         custom_criteria: str = ""
     ) -> Tuple[bool, str]:
         """
-        Проверяет список изображений через выбранный AI-провайдер (Gemini или OpenAI).
+        Проверяет список изображений через выбранный AI-провайдер (Grok, Gemini или OpenAI).
         """
         if not images_bytes:
             return False, "Не передано ни одного изображения для проверки."
 
         criteria = custom_criteria or settings.verification_criteria
 
-        if self.provider == "gemini":
+        if self.provider in ("grok", "xai"):
+            return await self._verify_with_grok(images_bytes, criteria)
+        elif self.provider == "gemini":
             return await self._verify_with_gemini(images_bytes, criteria)
         else:
             return await self._verify_with_openai(images_bytes, criteria)
+
+    async def _verify_with_grok(
+        self,
+        images_bytes: List[bytes],
+        criteria: str
+    ) -> Tuple[bool, str]:
+        """Проверка скриншотов через xAI Grok API (модель grok-2-vision-1212)."""
+        logger.info("Отправка %d скриншотов в xAI Grok API (%s)...", len(images_bytes), self.xai_model)
+
+        content_items = [
+            {
+                "type": "text",
+                "text": (
+                    f"Тебе предоставлено {len(images_bytes)} скриншот(ов).\n"
+                    f"Критерии проверки:\n{criteria}\n\n"
+                    "Проанализируй изображения. Убедись, что они соответствуют критериям.\n"
+                    "Верни строго валидный JSON объект следующего вида:\n"
+                    "{\n"
+                    '  "approved": true или false,\n'
+                    '  "reason": "Четкое, вежливое объяснение на русском языке."\n'
+                    "}"
+                )
+            }
+        ]
+
+        for img_data in images_bytes:
+            b64_str = base64.b64encode(img_data).decode("utf-8")
+            content_items.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{b64_str}",
+                    "detail": "high"
+                }
+            })
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Ты профессиональный верификатор выполнения условий для предоставления доступа "
+                    "в закрытый Telegram-канал. Всегда возвращай строго валидный JSON с полями approved (boolean) и reason (string)."
+                )
+            },
+            {
+                "role": "user",
+                "content": content_items
+            }
+        ]
+
+        try:
+            client = self.grok_client
+            response = await client.chat.completions.create(
+                model=self.xai_model,
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=1000
+            )
+
+            raw_text = response.choices[0].message.content or "{}"
+            logger.info("Ответ от xAI Grok: %s", raw_text)
+
+            cleaned = raw_text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[-1]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned.rsplit("\n", 1)[0]
+                cleaned = cleaned.strip()
+
+            parsed = json.loads(cleaned)
+            approved = bool(parsed.get("approved", False))
+            reason = str(parsed.get("reason", "Решение не содержит описания.")).strip()
+
+            return approved, reason
+
+        except Exception as e:
+            logger.exception("Ошибка при обращении к xAI Grok API: %s", e)
+            return False, f"Ошибка при проверке скриншотов через Grok API: {str(e)}"
 
     async def _verify_with_gemini(
         self,

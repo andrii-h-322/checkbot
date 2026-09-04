@@ -73,9 +73,11 @@ cp .env.example .env
 | `TELEGRAM_BOT_TOKEN` | Токен бота от [@BotFather](https://t.me/BotFather) | `123456789:ABCdefGhI...` |
 | `CHANNEL_ID` | ID закрытого канала (числовой или юзернейм) | `-1001234567890` |
 | `ADMIN_TELEGRAM_USERNAME` | Юзернейм администратора для кнопки связи | `@my_support_tg` |
-| `AI_PROVIDER` | AI-провайдер: `gemini` или `openai` | `gemini` |
+| `AI_PROVIDER` | AI-провайдер: `grok` (xAI), `gemini` или `openai` | `grok` |
+| `XAI_API_KEY` | API-ключ xAI Grok (консоль https://console.x.ai) | `xai-...` |
+| `XAI_MODEL` | Модель Grok Vision | `grok-2-vision-1212` |
 | `GEMINI_API_KEY` | API-ключ Google AI Studio | `AIzaSy...` |
-| `GEMINI_MODEL` | Модель Gemini | `gemini-2.5-flash` |
+| `GEMINI_MODEL` | Модель Gemini | `gemini-3.6-flash` |
 | `OPENAI_API_KEY` | API-ключ OpenAI (если выбран провайдер `openai`) | `sk-proj-...` |
 | `INVITE_LINK_EXPIRE_HOURS` | Время жизни ссылки в часах (`0` — бессрочная) | `24` |
 | `INVITE_LINK_MEMBER_LIMIT` | Лимит использований ссылки (`0` — безлимит, `1` — одноразовая) | `0` |

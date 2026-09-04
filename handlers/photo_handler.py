@@ -126,7 +126,13 @@ async def process_verification(
     photos_to_verify = photos[:2]
 
     # Уведомляем пользователя о начале проверки
-    provider_name = "Google Gemini" if settings.ai_provider.lower() == "gemini" else "GPT-4o"
+    if settings.ai_provider.lower() in ("grok", "xai"):
+        provider_name = "xAI Grok"
+    elif settings.ai_provider.lower() == "gemini":
+        provider_name = "Google Gemini"
+    else:
+        provider_name = "GPT-4o"
+
     status_msg = await reply_to_message.reply_text(
         f"⏳ <b>Скриншоты получены!</b>\n"
         f"Передаю изображения в модуль <b>{provider_name}</b> для анализа... Это займет несколько секунд.",
