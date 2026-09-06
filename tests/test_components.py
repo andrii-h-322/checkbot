@@ -459,6 +459,27 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(photos[0].file_id, "photo_1")
         self.assertEqual(photos[1].file_id, "photo_2")
 
+    async def test_media_collector_single_photo_immediate(self):
+        """Тестирование мгновенной обработки одиночного фото для проверки 1 скриншота."""
+        collector = MediaCollector()
+        completed_results = []
+
+        async def callback(photos, messages):
+            completed_results.append((photos, messages))
+
+        photo1 = MagicMock(file_id="single_photo_1")
+        msg1 = MagicMock(message_id=201)
+
+        # Отправляем одиночное фото
+        await collector.add_single_photo(user_id=999, message=msg1, best_photo=photo1, on_complete=callback)
+
+        # Обработка должна сработать сразу без задержек и таймаутов
+        self.assertEqual(len(completed_results), 1)
+        photos, messages = completed_results[0]
+        self.assertEqual(len(photos), 1)
+        self.assertEqual(photos[0].file_id, "single_photo_1")
+        self.assertEqual(messages[0].message_id, 201)
+
     async def test_database_filtering(self):
         """Тестирование поиска и фильтрации пользователей по статусу в БД."""
         await self.db.upsert_user(user_id=1, username="alice", first_name="Alice")
