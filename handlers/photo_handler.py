@@ -194,6 +194,25 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             db=db
         )
 
+    # Функция информирования о необходимости второго скриншота при поштучной отправке
+    async def _on_need_more(count: int, msg: Message) -> None:
+        if count == 1:
+            await msg.reply_text(
+                "📥 <b>Первый скриншот получен!</b>\n\n"
+                "Пожалуйста, отправьте <b>второй скриншот</b> с комментарием в TikTok в течение 45 секунд "
+                "или пришлите оба скриншота одним альбомом.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_admin_contact_keyboard()
+            )
+        else:
+            await msg.reply_text(
+                "⚠️ <b>Время ожидания второго скриншота истекло.</b>\n\n"
+                "Для проверки необходимо <b>2 скриншота</b> с подтверждением комментариев в TikTok. "
+                "Пожалуйста, отправьте оба скриншота заново (одним альбомом или по очереди).",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_admin_contact_keyboard()
+            )
+
     # Проверяем, пришло ли фото в составе медиа-группы (альбома)
     if message.media_group_id:
         logger.info("Получено фото из медиа-группы %s от user_id=%s", message.media_group_id, user.id)
@@ -209,7 +228,8 @@ async def photo_message_handler(update: Update, context: ContextTypes.DEFAULT_TY
             user_id=user.id,
             message=message,
             best_photo=best_photo,
-            on_complete=_on_complete
+            on_complete=_on_complete,
+            on_need_more=_on_need_more
         )
 
 
@@ -221,18 +241,18 @@ async def process_verification(
     db: Database
 ) -> None:
     """Основная логика скачивания, отправки в AI и выдачи ссылки."""
-    if len(photos) < 1:
+    if len(photos) < 2:
         await reply_to_message.reply_text(
-            "❌ <b>Скриншот не обнаружен.</b>\n\n"
-            "<i>(Этот бот — пример для проверки работоспособности)</i>\n"
-            "Пожалуйста, отправьте <b>1 скриншот</b> для проведения проверки.",
+            f"❌ Получено скриншотов: <b>{len(photos)}</b> из 2 необходимых.\n\n"
+            "Для входа в канал необходимо отправить <b>ровно 2 скриншота</b> из TikTok с оставленными комментариями "
+            "(одним альбомом или по очереди).",
             parse_mode=ParseMode.HTML,
             reply_markup=get_admin_contact_keyboard()
         )
         return
 
-    # Для проверки достаточно 1 скриншота
-    photos_to_verify = photos[:1]
+    # Берем первые 2 скриншота
+    photos_to_verify = photos[:2]
 
     # Уведомляем пользователя о начале проверки
     if settings.ai_provider.lower() in ("grok", "xai"):
@@ -243,9 +263,8 @@ async def process_verification(
         provider_name = "GPT-4o"
 
     status_msg = await reply_to_message.reply_text(
-        f"⏳ <b>Демо-скриншот получен!</b>\n"
-        "<i>(Бот-пример для проверки работоспособности AI-верификации)</i>\n\n"
-        f"Передаю изображение в AI-модуль <b>{provider_name}</b> для анализа... Это займет несколько секунд.",
+        "⏳ <b>Скриншоты получены!</b>\n\n"
+        f"Проверяю комментарии в TikTok через нейросеть <b>{provider_name}</b>... Это займет несколько секунд.",
         parse_mode=ParseMode.HTML,
         reply_markup=get_admin_contact_keyboard()
     )
@@ -295,21 +314,20 @@ async def process_verification(
             )
 
             success_text = (
-                "🎉 <b>Демонстрационная проверка успешно пройдена!</b>\n"
-                "<i>(Этот бот — пример для проверки работоспособности AI-верификации)</i>\n\n"
+                "🎉 <b>Поздравляем, проверка комментариев успешно пройдена!</b>\n\n"
                 f"💬 <b>Вердикт AI ({provider_name}):</b>\n<i>{reason}</i>\n\n"
             )
 
             if invite_link:
                 success_text += (
-                    f"👉 <b>Ваша тестовая ссылка для входа:</b>\n"
+                    "👉 <b>Ваша персональная ссылка для входа в канал:</b>\n"
                     f'<a href="{invite_link}">{invite_link}</a>\n'
                     f"{link_note}\n\n"
-                    "Тест успешно завершен! Нажмите на кнопку ниже или перейдите по ссылке, чтобы проверить вход. 🚀"
+                    "Нажмите на кнопку ниже или перейдите по ссылке, чтобы вступить! 🚀"
                 )
             else:
                 success_text += (
-                    "✅ Условия успешно подтверждены в тестовом режиме!\n"
+                    "✅ Комментарии успешно подтверждены!\n"
                     "Обратитесь к администратору для получения ссылки."
                     f"{link_note}"
                 )
@@ -329,13 +347,12 @@ async def process_verification(
             )
 
             reject_text = (
-                "❌ <b>Демонстрационная проверка не пройдена.</b>\n"
-                "<i>(Этот бот — пример для проверки работоспособности: AI обнаружил несоответствие)</i>\n\n"
+                "❌ <b>К сожалению, проверка не пройдена.</b>\n\n"
                 f"💬 <b>Причина отказа ({provider_name}):</b>\n{reason}\n\n"
                 "🔄 <b>Что делать дальше?</b>\n"
-                "1. Ознакомьтесь с замечанием AI выше.\n"
-                "2. Отправьте другой скриншот для повторной проверки работоспособности.\n"
-                "3. Если у вас возникли вопросы по работе демо-бота — нажмите кнопку ниже для связи с администратором."
+                "1. Убедитесь, что вы оставили 2 комментария в TikTok с текстом: <code>Мне скинул @fulyashki</code> (или похожим текстом).\n"
+                "2. Сделайте 2 четких скриншота из TikTok, на которых видны эти комментарии, и отправьте их заново.\n"
+                "3. Если вы уверены, что выполнили все условия, или произошла ошибка — нажмите кнопку ниже для связи с администратором."
             )
             await status_msg.edit_text(
                 reject_text,
@@ -346,8 +363,7 @@ async def process_verification(
     except Exception as e:
         logger.exception("Непредвиденная ошибка при проверке для user_id=%s: %s", user.id, e)
         await status_msg.edit_text(
-            f"⚠️ <b>Произошла ошибка при демо-проверке скриншота:</b>\n<code>{str(e)}</code>\n\n"
-            "<i>(Бот-пример для проверки работоспособности)</i>\n"
+            f"⚠️ <b>Произошла ошибка при проверке скриншотов:</b>\n<code>{str(e)}</code>\n\n"
             "Пожалуйста, попробуйте еще раз позже или свяжитесь с администратором кнопкой ниже.",
             parse_mode=ParseMode.HTML,
             reply_markup=get_admin_contact_keyboard()

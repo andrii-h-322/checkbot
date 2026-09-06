@@ -459,26 +459,53 @@ class TestCheckBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(photos[0].file_id, "photo_1")
         self.assertEqual(photos[1].file_id, "photo_2")
 
-    async def test_media_collector_single_photo_immediate(self):
-        """Тестирование мгновенной обработки одиночного фото для проверки 1 скриншота."""
-        collector = MediaCollector()
+    async def test_media_collector_single_photos_sequential(self):
+        """Тестирование пошаговой отправки 2 фото подряд."""
+        collector = MediaCollector(single_photo_timeout=1.0)
         completed_results = []
+        need_more_results = []
 
-        async def callback(photos, messages):
+        async def on_complete(photos, messages):
             completed_results.append((photos, messages))
+
+        async def on_need_more(count, msg):
+            need_more_results.append((count, msg))
 
         photo1 = MagicMock(file_id="single_photo_1")
         msg1 = MagicMock(message_id=201)
 
-        # Отправляем одиночное фото
-        await collector.add_single_photo(user_id=999, message=msg1, best_photo=photo1, on_complete=callback)
+        photo2 = MagicMock(file_id="single_photo_2")
+        msg2 = MagicMock(message_id=202)
 
-        # Обработка должна сработать сразу без задержек и таймаутов
+        # Отправляем 1-е фото
+        await collector.add_single_photo(
+            user_id=999,
+            message=msg1,
+            best_photo=photo1,
+            on_complete=on_complete,
+            on_need_more=on_need_more
+        )
+
+        # Проверка: завершение еще не вызвано, вызван on_need_more с count=1
+        self.assertEqual(len(completed_results), 0)
+        self.assertEqual(len(need_more_results), 1)
+        self.assertEqual(need_more_results[0][0], 1)
+
+        # Отправляем 2-е фото
+        await collector.add_single_photo(
+            user_id=999,
+            message=msg2,
+            best_photo=photo2,
+            on_complete=on_complete,
+            on_need_more=on_need_more
+        )
+
+        # Теперь on_complete должен быть вызван с двумя фото
         self.assertEqual(len(completed_results), 1)
         photos, messages = completed_results[0]
-        self.assertEqual(len(photos), 1)
+        self.assertEqual(len(photos), 2)
         self.assertEqual(photos[0].file_id, "single_photo_1")
-        self.assertEqual(messages[0].message_id, 201)
+        self.assertEqual(photos[1].file_id, "single_photo_2")
 
     async def test_database_filtering(self):
         """Тестирование поиска и фильтрации пользователей по статусу в БД."""

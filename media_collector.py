@@ -70,11 +70,46 @@ class MediaCollector:
         on_need_more: Optional[Callable[[int, Message], Any]] = None
     ) -> None:
         """
-        Обработка одиночного фото: для проверки требуется ровно 1 скриншот,
-        поэтому сразу запускаем on_complete без ожидания и задержек.
+        Обработка фото, отправленного без media_group_id (поштучно).
+        Если это 1-е фото — запускаем таймер ожидания 2-го фото.
+        Если это 2-е фото — отменяем таймер и запускаем on_complete.
         """
-        logger.info("Получен одиночный скриншот от user_id=%s. Запуск проверки работоспособности...", user_id)
-        await on_complete([best_photo], [message])
+        # Если уже был буфер для пользователя
+        if user_id in self._user_single_buffers:
+            buffer = self._user_single_buffers.pop(user_id)
+            if buffer.get("task") and not buffer["task"].done():
+                buffer["task"].cancel()
+
+            photos = buffer["photos"] + [best_photo]
+            messages = buffer["messages"] + [message]
+
+            logger.info("Пользователь %s прислал второе фото поштучно. Запуск проверки...", user_id)
+            await on_complete(photos, messages)
+        else:
+            # Первое фото
+            async def _timeout_checker():
+                try:
+                    await asyncio.sleep(self.single_photo_timeout)
+                    buf = self._user_single_buffers.pop(user_id, None)
+                    if buf and on_need_more:
+                        logger.info("Таймаут ожидания второго фото для пользователя %s", user_id)
+                        await on_need_more(len(buf["photos"]), buf["messages"][-1])
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.exception("Ошибка в таймауте одиночного фото для user_id=%s: %s", user_id, e)
+
+            task = asyncio.create_task(_timeout_checker())
+            self._user_single_buffers[user_id] = {
+                "photos": [best_photo],
+                "messages": [message],
+                "task": task,
+                "updated_at": time.time()
+            }
+
+            # Отправляем пользователю быстрое подтверждение, что 1-е фото принято
+            if on_need_more:
+                await on_need_more(1, message)
 
 
 # Синглтон коллектора
